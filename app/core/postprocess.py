@@ -257,10 +257,12 @@ def relation(p: Record, c: Record) -> str:
         return "different"
     a, b = key(p.text), key(c.text)
     gap = c.t - p.t_last
+    # 한참 뒤에 나온 글은 별개의 대사로 본다 — '같은 글' 판정보다 먼저 본다.
+    # (장소/시간 카드는 시각 숫자만 다른 채로 몇십 초 뒤에 다시 나온다: 10:10 카드 뒤의 10:30 카드가 앞 카드에 합쳐졌다)
+    if gap > 15.0:
+        return "different"
     if a == b or (min(len(a), len(b)) >= 4 and ratio(a, b) >= 0.88):
         return "same"
-    if gap > 15.0:  # 한참 뒤에 나온 글은 별개의 대사로 본다
-        return "different"
     if len(a) < len(b):
         if not a:
             return "grow"
