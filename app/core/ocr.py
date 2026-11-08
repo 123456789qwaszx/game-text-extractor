@@ -405,6 +405,8 @@ class PaddleRecognizer:
     HEIGHT = 48          # 입력 높이가 모델에 고정돼 있지 않을 때 쓰는 값 (PP-OCRv5 학습 높이)
     MAX_WIDTH = 3200     # 아주 긴 줄의 상한 (메모리 보호)
     ELLIPSIS_MIN = 0.03  # 0이면 끈다
+    # 줄 끝 마침표도 같은 처지다(1편 '총으로 협상해.'의 '.'에 17%) — 마지막 글자 뒤 칸에서만 본다
+    END_DOT_MIN = 0.10   # 0이면 끈다
     SPACE_RATIO = TesseractRecognizer.SPACE_RATIO
 
     def __init__(self, model_path: str = paths.REC_MODEL, dict_path: str = paths.REC_DICT):
@@ -454,6 +456,15 @@ class PaddleRecognizer:
             weak = (idx == 0) & (probs[:, e] >= self.ELLIPSIS_MIN)
             idx = np.where(weak, e, idx)
             p = np.where(weak, probs[:, e], p)
+        d = self.chars.index(".") if (self.END_DOT_MIN > 0 and "." in self.chars) else -1
+        nz = np.nonzero(idx)[0]
+        if d > 0 and len(nz):
+            tail = np.arange(len(idx)) > nz[-1]
+            weak = tail & (idx == 0) & (probs[:, d] >= self.END_DOT_MIN)
+            if weak.any():
+                k = int(np.argmax(weak))  # 마지막 글자 뒤 첫 칸 하나만
+                idx = idx.copy(); p = p.copy()
+                idx[k], p[k] = d, probs[k, d]
         out, prev = [], -1
         for t, k in enumerate(idx):
             if k != prev and k != 0 and k < len(self.chars):
@@ -511,7 +522,8 @@ class LineOCR:
     def __init__(self, lang: str = "kor", tesseract_cmd: Optional[str] = None, engine: str = "auto"):
         from concurrent.futures import ThreadPoolExecutor
 
-        self.detector = TextDetector()
+        # 대사창(1080p 녹화에서 폭 약 1470px)을 줄이지 않고 검출한다 — 1280으로 줄이면 1편 '윽……'이 통째로 사라졌다
+        self.detector = TextDetector(max_side=1600)
         if engine == "auto":
             engine = self.pick_engine(lang)
         if engine == "ppocr":
@@ -546,8 +558,10 @@ class LineOCR:
             if len(rows) > 1 and (y1 - y0) < 0.6 * med_h and (x1 - x0) < 2.5 * (y1 - y0):
                 continue
             pad = max(4, int(0.15 * (y1 - y0)))
+            # 한두 글자짜리 줄은 가로 여백을 넉넉히 — 3편B 메신저 '응'이 신뢰도 83(여백 15%) / 88(50%)
+            padx = max(pad, int(0.5 * (y1 - y0))) if (x1 - x0) < 2 * (y1 - y0) else pad
             src = img_bgr if getattr(self.recognizer, "wants_color", False) else gray
-            crop = src[max(0, y0 - pad):min(H, y1 + pad), max(0, x0 - pad):min(W, x1 + pad)]
+            crop = src[max(0, y0 - pad):min(H, y1 + pad), max(0, x0 - padx):min(W, x1 + padx)]
             if crop.size:
                 jobs.append(((x0, y0, x1, y1), crop))
         # 줄마다 Tesseract를 따로 실행하므로 여러 줄을 동시에 읽어 시간을 줄인다

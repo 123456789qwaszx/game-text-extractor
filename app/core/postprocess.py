@@ -269,7 +269,10 @@ def relation(p: Record, c: Record) -> str:
         if not a:
             # 말줄임표만 있는 줄('……')도 글자를 빼면 빈 문자열이다. 곧바로 이어 그려질 때만 자라는 중으로 본다.
             # (1편 43.1초 면접관 '……'가 16초 뒤 다음 대사의 '앞부분'으로 합쳐져 두 줄이 함께 사라졌다)
-            return "grow" if gap <= 2.0 else "different"
+            # 이어 그려진 글이면 앞 줄(말줄임표)로 시작해야 한다 — 3편B 30.7초 '……'가 잠깐 비친 잡음 'IKOC'로 '자랐다'
+            if gap > 2.0 or (p.text.strip() and not c.text.strip().startswith(p.text.strip()[:1])):
+                return "different"
+            return "grow"
         # 읽는 순간 마지막 글자가 반쯤 그려져 있을 수 있으므로 앞부분 위주로 비교
         if len(a) >= 4 and gap <= 6.0 and ratio(a, b[:len(a)]) >= 0.7:
             return "grow"

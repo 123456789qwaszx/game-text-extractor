@@ -87,5 +87,20 @@ class SpacingTests(unittest.TestCase):
         self.assertEqual(r.decode(p, np.ones(24, bool))[0], "가 나")
 
 
+class EndDotTests(unittest.TestCase):
+    def test_weak_dot_after_the_last_letter_is_kept(self):
+        # 1편 '총으로 협상해.': 마지막 칸의 '.'이 17%로 빈칸(80%)에 졌다
+        r = recognizer("가나.")  # 3='.'
+        p = probs([1, 0, 2, 0], 5)
+        p[3] = [0.8, 0.0, 0.0, 0.17, 0.03]
+        self.assertEqual(r.decode(p)[0], "가나.")
+
+    def test_weak_dot_between_letters_is_not_added(self):
+        r = recognizer("가나.")
+        p = probs([1, 0, 2], 5)
+        p[1] = [0.8, 0.0, 0.0, 0.17, 0.03]
+        self.assertEqual(r.decode(p)[0], "가나")
+
+
 if __name__ == "__main__":
     unittest.main()

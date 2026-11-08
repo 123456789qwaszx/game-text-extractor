@@ -32,6 +32,12 @@ class RelationTests(unittest.TestCase):
         c = rec(10.5, "……그래서")
         self.assertEqual(relation(p, c), "grow")
 
+    def test_an_ellipsis_line_does_not_grow_into_unrelated_text(self):
+        # 3편B 30.7초: 코하쿠 '……' 뒤 잠깐 비친 잡음 'IKOC'가 '자라는 중'으로 합쳐져 줄이 사라졌다
+        p = rec(30.7, "……", speaker="코하쿠", t_last=33.2)
+        c = rec(33.7, "IKOC")
+        self.assertEqual(relation(p, c), "different")
+
 
 if __name__ == "__main__":
     unittest.main()

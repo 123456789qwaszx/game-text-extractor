@@ -384,7 +384,7 @@ def _cleanup_temp(shots_dir: str) -> None:
 def _keep(ln: Line) -> bool:
     # 한 글자짜리 잡음(아이콘, 배경 무늬)을 거른다
     core = ln.text.replace(" ", "")
-    if len(core) <= 1 and ln.conf < 85:
+    if len(core) <= 1 and ln.conf < 80:  # PP-OCR: 메신저 '응' 83, 아이콘 잡음은 대개 이보다 낮다
         return False
     return True
 
