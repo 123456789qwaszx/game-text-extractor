@@ -1,0 +1,46 @@
+{
+  "name": "샘플게임 (Google Play PC 1080p_v2)",
+  "version": 1,
+  "language": "kor",
+  "sample_fps": 10.0,
+  "stable_sec": 0.2,
+  "change_threshold": 0.05,
+  "force_ocr_sec": 1.2,
+  "min_confidence": 40.0,
+  "review_confidence": 80.0,
+  "ellipsis": "……",
+  "line_join": "auto",
+  "replacements": [],
+  "regions": [
+    {
+      "type": "speaker",
+      "rect": [
+        0.21273,
+        0.68423,
+        0.41039,
+        0.76046
+      ]
+    },
+    {
+      "type": "ignore",
+      "rect": [
+        0.77303,
+        0.89477,
+        0.81575,
+        0.96555
+      ]
+    },
+    {
+      "type": "area",
+      "rect": [
+        0.17923,
+        0.68242,
+        0.82663,
+        0.97462
+      ],
+      "label": "대사",
+      "label_no_speaker": "나레이션"
+    }
+  ],
+  "notes": "하단 대사창(이름표+본문), 컷신 대사, 나레이션, 왼쪽 장소/시간 카드를 한 영역에서 읽습니다. 오른쪽 아래 '다음' 아이콘은 무시합니다."
+}
