@@ -241,6 +241,11 @@ def extract(video_path: str, profile: Profile, out_dir: Optional[str] = None,
                 out[name] = round(float(np.median(cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY))), 1)
         return out
     watchers = [AreaWatcher(i, a.to_px(W, H), ignore_px, profile) for i, a in enumerate(profile.areas)]
+    header_px = {}
+    for i, a in enumerate(profile.areas):
+        if a.mode and a.header:
+            x0, y0, x1, y1 = a.header
+            header_px[i] = (int(x0 * W), int(y0 * H), max(int(x0 * W) + 8, int(x1 * W)), max(int(y0 * H) + 8, int(y1 * H)))
 
     readings: List[Reading] = []
     state = {"rid": 0}
@@ -295,6 +300,11 @@ def extract(video_path: str, profile: Profile, out_dir: Optional[str] = None,
                     wt.clear_probe()
                     continue
                 rt, rframe = (prev_t, prev_frame) if (why == "exit" and prev_frame is not None) else (t, frame)
+                hb = header_px.get(wt.idx)
+                if hb is not None and not ocr.detector.detect(rframe[hb[1]:hb[3], hb[0]:hb[2]]):
+                    # 메신저 · 카드 화면 영역은 화면 대부분을 덮어 캐릭터가 움직일 때마다 깨어난다.
+                    # 머리 자리(상대 이름 · 질문 말풍선)에 글자가 없으면 그 화면이 아니므로 큰 영역은 검출하지 않는다.
+                    continue
                 rows = ocr.detect_rows(wt.crop(rframe), ignore=wt.ignore_local,
                                        max_gap=1.0 if profile.areas[wt.idx].mode == "cards" else 3.0)
                 fp = wt.fingerprint(rows)
