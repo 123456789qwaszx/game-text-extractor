@@ -1,0 +1,13 @@
+# 설치가 만드는 것
+.venv/
+__pycache__/
+*.pyc
+
+# 이 PC의 설정(Tesseract 경로 · 마지막 폴더 · 프로필)
+settings.json
+error.log
+
+# 추출 결과
+*_텍스트.xlsx
+*_텍스트 (*).xlsx
+*_텍스트_스크린샷/

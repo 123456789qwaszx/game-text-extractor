@@ -1,0 +1,64 @@
+{
+  "name": "샘플게임 (Google Play PC 1080p)",
+  "version": 1,
+  "language": "kor",
+  "sample_fps": 10.0,
+  "stable_sec": 0.2,
+  "change_threshold": 0.05,
+  "force_ocr_sec": 1.2,
+  "min_confidence": 40.0,
+  "review_confidence": 80.0,
+  "ellipsis": "……",
+  "line_join": "auto",
+  "regions": [
+    {
+      "type": "area",
+      "rect": [
+        0.03125,
+        0.68056,
+        0.90104,
+        0.99074
+      ],
+      "label": "대사",
+      "label_no_speaker": "나레이션"
+    },
+    {
+      "type": "label",
+      "rect": [
+        0.0,
+        0.68519,
+        0.10417,
+        0.87963
+      ],
+      "label": "장소/시간"
+    },
+    {
+      "type": "speaker",
+      "rect": [
+        0.18229,
+        0.71296,
+        0.41146,
+        0.78889
+      ]
+    },
+    {
+      "type": "speaker",
+      "rect": [
+        0.10417,
+        0.73148,
+        0.17969,
+        0.78889
+      ]
+    },
+    {
+      "type": "ignore",
+      "rect": [
+        0.80469,
+        0.90278,
+        0.84635,
+        0.96296
+      ]
+    }
+  ],
+  "notes": "하단 대사창(이름표+본문), 컷신 대사, 나레이션, 왼쪽 장소/시간 카드를 한 영역에서 읽습니다. 오른쪽 아래 '다음' 아이콘은 무시합니다."
+}

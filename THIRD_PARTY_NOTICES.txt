@@ -1,0 +1,14 @@
+﻿이 프로그램은 다음 오픈소스 소프트웨어와 모델을 사용합니다.
+
+- PaddleOCR PP-OCRv5 텍스트 검출 모델 (models/ppocrv5_det.onnx)
+  Apache License 2.0 - https://github.com/PaddlePaddle/PaddleOCR
+  (ONNX 변환본: OnnxOCR, Apache License 2.0 - https://github.com/jingsongliujing/OnnxOCR)
+- Tesseract OCR 및 tessdata_best 언어 파일 (models/tessdata)
+  Apache License 2.0 - https://github.com/tesseract-ocr/tesseract
+- Kiwi 한국어 형태소 분석기 (kiwipiepy) - LGPL v3 - https://github.com/bab2min/kiwipiepy
+- ONNX Runtime - MIT License
+- OpenCV - Apache License 2.0
+- PyAV / FFmpeg - BSD / LGPL
+- openpyxl - MIT License
+- Pillow - HPND License
+- NumPy - BSD License
