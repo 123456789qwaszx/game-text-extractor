@@ -30,6 +30,8 @@ class Reading:
     lines: List[Line]           # 프레임 기준 좌표로 변환된 줄
     stable: bool                # 화면이 멈춘 순간에 읽었는지(True) / 강제로 읽었는지(False)
     shot: str = ""              # 저장된 스크린샷 경로
+    marks: Dict[str, float] = field(default_factory=dict)  # 화면 표지 이름 → 밝기
+    frame_w: int = 0            # 프레임 폭 (형태 규칙의 가로 위치 비율 계산용)
 
 
 @dataclass
@@ -275,7 +277,8 @@ def relation(p: Record, c: Record) -> str:
             return "grow"
     if len(b) < len(a) and gap <= 6.0:
         if not b:
-            return "shrink"
+            # 글이 지워지는 중 — 단, 앞에 없던 이름표가 새로 떴으면 말줄임표만 있는 새 대사다
+            return "different" if (c.speaker and not p.speaker) else "shrink"
         if len(b) >= 4 and ratio(b, a[:len(b)]) >= 0.7:
             return "shrink"
         if len(b) < 4 and a.startswith(b):
@@ -293,23 +296,245 @@ def _hangul_ratio(s: str) -> float:
     return sum(1 for ch in m if "\uAC00" <= ch <= "\uD7A3" or "\u3131" <= ch <= "\u318E") / len(m)
 
 
+_UNKNOWN_SPEAKER = re.compile(r"\?{2,}")
+
+
+def rule_kind(rules, rd: Reading, base: str, has_speaker: bool, body: Sequence[Line]) -> str:
+    """프로필의 형태 규칙 중 처음 맞는 것의 형태 이름 (없으면 ""). base: 영역이 정한 기본 형태."""
+    left = (min(l.box[0] for l in body) / rd.frame_w) if (body and rd.frame_w) else None
+    for r in rules or ():
+        if r.get("from") and r["from"] != base:
+            continue
+        if "speaker" in r and bool(r["speaker"]) != has_speaker:
+            continue
+        if "text_left_min" in r and (left is None or left < r["text_left_min"]):
+            continue
+        if "text_left_max" in r and (left is None or left > r["text_left_max"]):
+            continue
+        if r.get("mark"):
+            v = rd.marks.get(r["mark"])
+            if v is None or ("mark_min" in r and v < r["mark_min"]) or ("mark_max" in r and v > r["mark_max"]):
+                continue
+        if r.get("kind"):
+            return r["kind"]
+    return ""
+
+
 def clean_speaker(s: str) -> str:
-    return _SPK_EDGE.sub("", s.strip()).strip()
+    s = s.strip()
+    if _UNKNOWN_SPEAKER.fullmatch(s.replace(" ", "")):
+        return "???"  # 정체를 숨긴 인물의 이름표 — 기호뿐이지만 화자다
+    return _SPK_EDGE.sub("", s).strip()
 
 
 # ---------------------------------------------------------------- 메인
 
+# ---------------------------------------------------------------- 메신저 화면
+
+_LETTER = re.compile(r"[0-9A-Za-z\u3131-\u318E\uAC00-\uD7A3\u3040-\u30FF\u4E00-\u9FFF]")
+_NAME_LETTER = re.compile(r"[A-Za-z\u3131-\u318E\uAC00-\uD7A3\u3040-\u30FF\u4E00-\u9FFF]")
+
+
+def messenger_records(readings: Sequence[Reading], area_idx: int, area: Region, profile: Profile,
+                      frame_size: Tuple[int, int], gap: float = 3.0):
+    """메신저 영역의 읽기 결과 → (말풍선마다 한 줄인 레코드들, 메신저가 떠 있던 시간 구간들).
+
+    - 머리 자리(area.header)에 상대 이름이 읽힌 순간만 메신저 화면으로 본다.
+    - 머리 아래 줄들을 위에서부터 말풍선으로 묶는다(줄 사이가 줄 높이의 0.4배보다 벌어지면 다음 말풍선).
+    - 바탕 채도가 높은 색 말풍선 = 내가 보낸 것(profile.messenger_self), 흰 말풍선 = 상대(머리 이름).
+    - 말풍선은 위로 밀려 올라가며 여러 번 읽히므로, 같은 화면(구간) 안에서 이미 나온 말풍선과 닮았으면 새 줄로 치지 않는다."""
+    W, H = frame_size
+    if not area.header or not W or not H:
+        return [], []
+    hx0, hy0, hx1, hy1 = area.header[0] * W, area.header[1] * H, area.header[2] * W, area.header[3] * H
+    sessions: List[List[Tuple[Reading, str, List[Line]]]] = []
+    for rd in sorted(readings, key=lambda r: r.t):
+        head = [l for l in rd.lines if hx0 <= (l.box[0] + l.box[2]) / 2 <= hx1 and hy0 <= (l.box[1] + l.box[3]) / 2 <= hy1]
+        head = sorted(head, key=lambda l: l.box[1])
+        name = clean_speaker(head[0].text) if head else ""
+        # 상대 이름은 글자(숫자 아님) 2자 이상, 또렷이 읽혀야 한다 — 그림 팝업의 '000' 같은 것에 속지 않게
+        # 이름에는 숫자가 없고 짧다 — 시작 화면의 '운월 30일 10:10' 같은 날짜 글에 속지 않게
+        if len(_NAME_LETTER.findall(name)) < 2 or head[0].conf < 80 or re.search(r"\d", name) or len(key(name)) > 10:
+            continue
+        rest = [l for l in rd.lines if l.box[1] >= hy1 and _LETTER.search(l.text)]
+        if sessions and rd.t - sessions[-1][-1][0].t <= gap:
+            sessions[-1].append((rd, name, rest))
+        else:
+            sessions.append([(rd, name, rest)])
+
+    out: List[Record] = []
+    spans: List[Tuple[float, float]] = []
+    for ses in sessions:
+        partner = Counter(n for _, n, _ in ses).most_common(1)[0][0]
+        spans.append((ses[0][0].t, ses[-1][0].t))
+        # 말풍선 관찰을 모은다 — 새로 뜬 말풍선은 미끄러져 들어오는 동안 한두 번 뭉개져 읽히므로,
+        # 같은 말풍선의 관찰끼리 묶어 가장 여러 번 같게 읽힌 글을 고른다(같은 횟수면 더 긴 쪽).
+        clusters: List[dict] = []
+        # 이모티콘 그림 속 글자('good' 등)는 말풍선 글보다 훨씬 작다 — 화면 전체의 줄 높이와 견준다
+        hs = [l.h for _, _, rest in ses for l in rest]
+        mh = float(np.median(hs)) if hs else 0.0
+        for rd, _, rest in ses:
+            rest = sorted((l for l in rest if l.h >= 0.8 * mh), key=lambda l: l.box[1])
+            bubbles: List[List[Line]] = []
+            for ln in rest:
+                if bubbles:
+                    prev = bubbles[-1][-1]
+                    if ln.box[1] - prev.box[3] <= 0.4 * max(prev.h, ln.h) and \
+                            (ln.tone > profile.messenger_self_tone) == (prev.tone > profile.messenger_self_tone):
+                        bubbles[-1].append(ln)
+                        continue
+                bubbles.append([ln])
+            for b in bubbles:
+                text = join_lines(b, lambda _l: True, profile.line_join, "kor" in profile.language)
+                k = key(text)
+                if not k:
+                    continue
+                mine = float(np.median([l.tone for l in b])) > profile.messenger_self_tone
+                spk = profile.messenger_self if mine else partner
+                hit = None
+                for c in clusters:
+                    if c["spk"] == spk and any(ratio(k, ok) >= 0.6 or k in ok or ok in k for ok in c["keys"]):
+                        hit = c
+                        break
+                if hit is None:
+                    hit = {"spk": spk, "t": rd.t, "keys": [], "texts": Counter(), "rd": rd, "lines": list(b), "conf": 0.0}
+                    clusters.append(hit)
+                hit["keys"].append(k)
+                hit["texts"][text] += 1
+                hit["t_last"] = rd.t
+                hit["conf"] = max(hit["conf"], min(l.conf for l in b))
+        def n(c):
+            return sum(c["texts"].values())
+
+        for c in clusters:
+            # 한 번만 읽힌 말풍선이 바로 옆 시각의 다른 말풍선과 어렴풋이 닮았으면 뭉개진 읽기다
+            if n(c) == 1 and any(o is not c and n(o) >= 2 and o["spk"] == c["spk"] and abs(o["t"] - c["t"]) <= 1.0
+                                 and ratio(c["keys"][0], o["keys"][-1]) >= 0.4 for o in clusters):
+                continue
+            text = max(c["texts"].items(), key=lambda kv: (kv[1], len(key(kv[0]))))[0]
+            rd = c["rd"]
+            r = Record(c["t"], c["t_last"], (area_idx, "messenger"), area.label or "메신저", c["spk"], text,
+                       c["conf"], rd.shot, rd.area_box, True, support=sum(c["texts"].values()), lines=c["lines"])
+            out.append(r)
+    return out, spans
+
+
+def cards_records(readings: Sequence[Reading], area_idx: int, area: Region, profile: Profile,
+                  frame_size: Tuple[int, int], gap: float = 3.0):
+    """카드 선택 화면(선택지 · 루트) → (화면마다 한 줄인 레코드들, 화면이 떠 있던 시간 구간들).
+
+    - 머리 자리(area.header: 질문 말풍선 자리)에 글이 읽히고, 영역 안 글이 가로로 2묶음 이상(카드 2장 이상)일 때만 카드 화면.
+    - 카드마다 위에서 아래로 줄을 잇는다. 첫 줄이 4자 이하의 짧은 이름표면 '이름: 내용'.
+    - 카드 위의 상태 표시(profile.choice_marks: '기존 선택' 등)는 글에서 빼고 메모로 남긴다.
+    - 한 화면 동안 여러 번 읽히므로 글자가 가장 많이 읽힌 순간 하나를 고른다."""
+    W, H = frame_size
+    if not area.header or not W or not H:
+        return [], []
+    hx0, hy0, hx1, hy1 = area.header[0] * W, area.header[1] * H, area.header[2] * W, area.header[3] * H
+    marks = [key(m) for m in (profile.choice_marks or [])]
+    obs = []
+    for rd in sorted(readings, key=lambda r: r.t):
+        inside = lambda l: hx0 <= (l.box[0] + l.box[2]) / 2 <= hx1 and hy0 <= (l.box[1] + l.box[3]) / 2 <= hy1
+        head = [l for l in rd.lines if inside(l)]
+        question = " ".join(l.text for l in sorted(head, key=lambda l: l.box[1]))
+        if not head or not re.search(profile.choice_question or ".", question.strip()):
+            continue
+        rest = [l for l in rd.lines if not inside(l) and _LETTER.search(l.text)]
+        cols: List[List[Line]] = []
+        for ln in sorted(rest, key=lambda l: (l.box[0] + l.box[2]) / 2):
+            cx = (ln.box[0] + ln.box[2]) / 2
+            if cols and abs(cx - float(np.mean([(l.box[0] + l.box[2]) / 2 for l in cols[-1]]))) <= 0.07 * W:
+                cols[-1].append(ln)
+            else:
+                cols.append([ln])
+        if len(cols) < 2:  # 질문 말풍선만 남은 순간(카드가 뜨는 중 · 고른 뒤 사라지는 중)도 같은 화면으로 친다
+            obs.append((rd, None, [], question))
+            continue
+        cards, notes = [], []
+        for col in cols:
+            col = sorted(col, key=lambda l: l.box[1])
+            body = [l for l in col if key(l.text) not in marks]
+            tags = [l.text for l in col if key(l.text) in marks]
+            if not body:
+                continue
+            if len(key(body[0].text)) <= 4 and len(body) > 1:
+                text = body[0].text + ": " + join_lines(body[1:], lambda _l: True, profile.line_join, "kor" in profile.language)
+            else:
+                text = join_lines(body, lambda _l: True, profile.line_join, "kor" in profile.language)
+            cards.append(text)
+            if tags:
+                notes.append(f"{text.split(':')[0][:12]} — {', '.join(tags)}")
+        obs.append((rd, cards, notes, question))
+    out: List[Record] = []
+    spans: List[Tuple[float, float]] = []
+    ses: list = []
+    for o in obs + [None]:
+        if o is not None and (not ses or o[0].t - ses[-1][0].t <= gap):
+            ses.append(o)
+            continue
+        full = [x for x in ses if x[1]]
+        if full:
+            best = max(full, key=lambda x: (len(x[1]), sum(len(key(c)) for c in x[1])))
+            rd = best[0]
+            r = Record(full[0][0].t, ses[-1][0].t, (area_idx, "cards"), area.label or "선택지", "", "\n".join(best[1]),
+                       min(l.conf for l in rd.lines), rd.shot, rd.area_box, True, support=len(ses))
+            r.notes.append("질문: " + best[3])
+            r.notes += best[2]
+            out.append(r)
+            spans.append((ses[0][0].t, ses[-1][0].t))
+        ses = [o] if o is not None else []
+    return out, spans
+
+
 def build_records(readings: Sequence[Reading], profile: Profile,
-                  zones_px: Sequence[Tuple[Region, Box]], autocorrect: bool = True) -> List[Record]:
+                  zones_px: Sequence[Tuple[Region, Box]], autocorrect: bool = True,
+                  frame_size: Tuple[int, int] = (0, 0)) -> List[Record]:
     areas = profile.areas
     korean = "kor" in profile.language
+    # 0) 게임 UI 화면(스토리 입장 창, 전투 결과의 '빈 곳을 터치하여 계속하세요' 등): 표지 글이 보이는 동안의 결과는
+    #    대사가 아니다. 화면마다 'UI' 한 줄만 남긴다. 영상 맨 앞(3초 안)에 뜬 UI는 영상 시작부터 UI로 본다(스테이지 목록).
+    msg_out: List[Record] = []
+    msg_spans: List[Tuple[float, float]] = []
+    ui_keys = [(p, key(p)) for p in (profile.ui_phrases or []) if key(p)]
+    if ui_keys:
+        hits = []
+        for rd in sorted(readings, key=lambda r: r.t):
+            for ln in rd.lines:
+                m = next((p for p, k in ui_keys if k in key(ln.text)), None)
+                if m:
+                    hits.append((rd, m, ln))
+                    break
+        groups: list = []
+        for h in hits:
+            if groups and h[0].t - groups[-1][-1][0].t <= 1.5:
+                groups[-1].append(h)
+            else:
+                groups.append([h])
+        for g in groups:
+            t0, t1 = g[0][0].t, g[-1][0].t
+            msg_spans.append((0.0 if t0 <= 3.0 else t0, t1))
+            rd, phrase, ln = g[0]
+            msg_out.append(Record(t0, t1, (-1, "ui"), "UI", "", phrase, ln.conf, rd.shot, rd.area_box, True,
+                                  support=len(g)))
+        ui_spans = list(msg_spans)
+        readings = [r for r in readings if not any(s - 0.5 <= r.t <= e + 0.5 for s, e in ui_spans)]
+    for i, a in enumerate(areas):
+        fn = {"messenger": messenger_records, "cards": cards_records}.get(a.mode)
+        if fn:
+            recs, spans = fn([r for r in readings if r.area_idx == i], i, a, profile, frame_size)
+            msg_out += recs
+            msg_spans += spans
+    if any(a.mode for a in areas) or msg_spans:
+        readings = [r for r in readings if not areas[r.area_idx].mode
+                    and not any(s - 0.5 <= r.t <= e + 0.5 for s, e in msg_spans)]
     # 1) 줄 배정 + 줄 오른쪽 끝 통계 (같은 위치에서 시작하는 줄끼리 묶어 '꽉 찬 줄'의 기준을 잡는다)
     staged = []
     rights: Dict[Tuple[int, int], List[int]] = {}
     for rd in readings:
         speaker, labels, body = assign(rd.lines, zones_px)
-        speaker = [l for l in speaker if (len(key(l.text)) >= 2 or l.conf >= 90)
-                   and (not korean or re.search(r"[\uAC00-\uD7A3]|[A-Za-z]{2,}", l.text))]
+        speaker = [l for l in speaker if _UNKNOWN_SPEAKER.fullmatch(l.text.replace(" ", "")) or (
+                   (len(key(l.text)) >= 2 or l.conf >= 90)
+                   and (not korean or re.search(r"[\uAC00-\uD7A3]|[A-Za-z]{2,}", l.text)))]
         staged.append((rd, speaker, labels, body))
         for ln in body:
             rights.setdefault((rd.area_idx, ln.box[0] // 24), []).append(ln.box[2])
@@ -335,6 +560,7 @@ def build_records(readings: Sequence[Reading], profile: Profile,
             used = list(speaker) + list(body)
             conf = min(l.conf for l in used)
             kind = (area.label or "대사") if spk else (area.label_no_speaker or "나레이션")
+            kind = rule_kind(profile.kind_rules, rd, kind, bool(spk), body) or kind
             cands.append(Record(rd.t, rd.t, sk, kind, spk, text, conf, rd.shot, rd.area_box,
                                 rd.stable, lines=used))
         for name, lns in labels.items():
@@ -375,6 +601,9 @@ def build_records(readings: Sequence[Reading], profile: Profile,
     for r in merged:
         if not key(r.text) and not r.speaker:
             continue
+        # 숫자 · 기호뿐인 대사창 결과(전투 화면의 남은 시간 · 피해 숫자 등)는 대사가 아니다. 장소/시간 카드는 별도 분류라 해당 없음
+        if not r.stream[1].startswith("label:") and key(r.text) and not _NAME_LETTER.search(r.text):
+            continue
         if not r.speaker and len(key(r.text)) <= 2 and r.conf < profile.review_confidence:
             continue
         # 한국어 게임인데 한글이 거의 없는 낮은 신뢰도 결과 = 배경 무늬 오인식.
@@ -392,6 +621,8 @@ def build_records(readings: Sequence[Reading], profile: Profile,
                 continue
             r.notes.append("화면 전환 중에 읽음")
         out.append(r)
+    if msg_out:
+        out = sorted(out + msg_out, key=lambda r: r.t)
 
     # 5) 화자 이름 확인 표시: 드물게 나온 이름이 자주 나온 이름과 한 글자만 다르면
     #    오인식일 수도, 실제로 다른 인물일 수도 있으므로 바꾸지 않고 '확인'만 요청한다

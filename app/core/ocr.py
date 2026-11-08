@@ -33,6 +33,7 @@ class Line:
     text: str
     conf: float
     box: Tuple[int, int, int, int]  # x0, y0, x1, y1 (입력 이미지 기준 픽셀)
+    tone: float = -1.0              # 메신저 영역: 줄 바탕의 채도(0~255, 중앙값). 색 말풍선 / 흰 말풍선 구분용
 
     @property
     def h(self) -> int:
@@ -109,9 +110,9 @@ class TextDetector:
         return out
 
 
-def group_lines(boxes: Sequence[Tuple[int, int, int, int]]) -> List[Tuple[int, int, int, int]]:
+def group_lines(boxes: Sequence[Tuple[int, int, int, int]], max_gap: float = 3.0) -> List[Tuple[int, int, int, int]]:
     """단어 단위 상자들을 같은 높이끼리 묶어 '줄' 상자로 만든다.
-    같은 높이라도 가로로 많이 떨어져 있으면 다른 줄로 본다."""
+    같은 높이라도 가로로 줄 높이의 max_gap배보다 떨어져 있으면 다른 줄로 본다(카드 화면은 카드 사이가 좁다)."""
     rects = sorted(boxes, key=lambda r: (r[1] + r[3]) / 2)
     lines: List[List[int]] = []
     for r in rects:
@@ -123,7 +124,7 @@ def group_lines(boxes: Sequence[Tuple[int, int, int, int]]) -> List[Tuple[int, i
             if not same_row:
                 continue
             gap = max(r[0] - L[2], L[0] - r[2])
-            if gap > 3.0 * max(rh, lh):
+            if gap > max_gap * max(rh, lh):
                 continue
             L[0], L[1], L[2], L[3] = min(L[0], r[0]), min(L[1], r[1]), max(L[2], r[2]), max(L[3], r[3])
             placed = True
@@ -138,7 +139,7 @@ def group_lines(boxes: Sequence[Tuple[int, int, int, int]]) -> List[Tuple[int, i
             for j in range(i + 1, len(lines)):
                 a, b = lines[i], lines[j]
                 ov = min(a[3], b[3]) - max(a[1], b[1])
-                if ov > 0.5 * min(a[3] - a[1], b[3] - b[1]) and max(a[0] - b[2], b[0] - a[2]) <= 3.0 * max(a[3] - a[1], b[3] - b[1]):
+                if ov > 0.5 * min(a[3] - a[1], b[3] - b[1]) and max(a[0] - b[2], b[0] - a[2]) <= max_gap * max(a[3] - a[1], b[3] - b[1]):
                     lines[i] = [min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3])]
                     del lines[j]
                     changed = True
@@ -380,7 +381,8 @@ _MEANINGFUL = re.compile(r"[0-9A-Za-zㄱ-ㆎ가-힣぀-ヿ一-鿿]")
 def is_meaningful(s: str) -> bool:
     if _MEANINGFUL.search(s):
         return True
-    return bool(re.fullmatch(r"[.…·]{2,}[?!]*", s.replace(" ", "")))
+    # 말줄임표만 있는 줄, 그리고 정체를 숨긴 인물의 이름표 '???'
+    return bool(re.fullmatch(r"[.…·]{2,}[?!]*|\?{2,}", s.replace(" ", "")))
 
 
 # ---------------------------------------------------------------- 인식: PP-OCRv5 한국어 모델
@@ -522,12 +524,12 @@ class LineOCR:
         self._pool = ThreadPoolExecutor(max_workers=max(1, min(4, (os.cpu_count() or 2))))
 
     def detect_rows(self, img_bgr: np.ndarray,
-                    ignore: Sequence[Tuple[int, int, int, int]] = ()) -> List[Tuple[int, int, int, int]]:
+                    ignore: Sequence[Tuple[int, int, int, int]] = (), max_gap: float = 3.0) -> List[Tuple[int, int, int, int]]:
         """글자 줄 위치만 빠르게 찾는다 (글자 읽기 없이)."""
         boxes = self.detector.detect(img_bgr)
         if ignore:
             boxes = [b for b in boxes if not _mostly_inside(b, ignore)]
-        return group_lines(boxes)
+        return group_lines(boxes, max_gap)
 
     def read(self, img_bgr: np.ndarray, min_conf: float = 0.0, ellipsis: str = "……",
              ignore: Sequence[Tuple[int, int, int, int]] = (), rows=None) -> List[Line]:

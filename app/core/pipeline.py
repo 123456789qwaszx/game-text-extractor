@@ -227,6 +227,19 @@ def extract(video_path: str, profile: Profile, out_dir: Optional[str] = None,
         return any(b[0] <= ax <= b[2] and b[1] <= ay <= b[3] for b in speaker_px)
 
     ignore_px = [b for z, b in zones_px if z.type == IGNORE]
+    marks_px = []
+    for m in profile.marks or ():
+        x0, y0, x1, y1 = m["rect"]
+        marks_px.append((m["name"], (int(x0 * W), int(y0 * H), max(int(x0 * W) + 1, int(x1 * W)),
+                                     max(int(y0 * H) + 1, int(y1 * H)))))
+
+    def measure_marks(frame: np.ndarray) -> dict:
+        out = {}
+        for name, (x0, y0, x1, y1) in marks_px:
+            patch = frame[y0:y1, x0:x1]
+            if patch.size:
+                out[name] = round(float(np.median(cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY))), 1)
+        return out
     watchers = [AreaWatcher(i, a.to_px(W, H), ignore_px, profile) for i, a in enumerate(profile.areas)]
 
     readings: List[Reading] = []
@@ -239,6 +252,12 @@ def extract(video_path: str, profile: Profile, out_dir: Optional[str] = None,
         lines = ocr.read(crop, min_conf=profile.min_confidence, ellipsis=profile.ellipsis,
                          ignore=wt.ignore_local, rows=rows)
         lines = [ln for ln in lines if _keep(ln)]
+        if profile.areas[wt.idx].mode == "messenger":  # 말풍선 색(보낸 쪽) 판정용 바탕 채도
+            hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+            for ln in lines:
+                x0, y0, x1, y1 = ln.box
+                patch = hsv[y0:y1, x0:x1, 1]
+                ln.tone = float(np.median(patch)) if patch.size else -1.0
         if len(lines) == 1 and in_speaker_zone(lines[0], wt.box):
             dots = find_dot_line(cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY), lines[0], profile.ellipsis)
             if dots is not None:
@@ -251,9 +270,10 @@ def extract(video_path: str, profile: Profile, out_dir: Optional[str] = None,
             shot_for[rt] = os.path.join(shots_dir, f"_r{state['rid']:05d}.jpg")
             _imwrite(shot_for[rt], rframe)
         ox, oy = wt.box[0], wt.box[1]
-        glines = [Line(l.text, l.conf, (l.box[0] + ox, l.box[1] + oy, l.box[2] + ox, l.box[3] + oy))
+        glines = [Line(l.text, l.conf, (l.box[0] + ox, l.box[1] + oy, l.box[2] + ox, l.box[3] + oy), l.tone)
                   for l in lines]
-        readings.append(Reading(state["rid"], rt, wt.idx, wt.box, glines, why != "forced", shot_for[rt]))
+        readings.append(Reading(state["rid"], rt, wt.idx, wt.box, glines, why != "forced", shot_for[rt],
+                                marks=measure_marks(rframe), frame_w=W))
         state["rid"] += 1
 
     last_report = 0.0
@@ -275,7 +295,8 @@ def extract(video_path: str, profile: Profile, out_dir: Optional[str] = None,
                     wt.clear_probe()
                     continue
                 rt, rframe = (prev_t, prev_frame) if (why == "exit" and prev_frame is not None) else (t, frame)
-                rows = ocr.detect_rows(wt.crop(rframe), ignore=wt.ignore_local)
+                rows = ocr.detect_rows(wt.crop(rframe), ignore=wt.ignore_local,
+                                       max_gap=1.0 if profile.areas[wt.idx].mode == "cards" else 3.0)
                 fp = wt.fingerprint(rows)
                 if why == "probe":
                     prev_fp = wt.probe_fp
@@ -301,12 +322,13 @@ def extract(video_path: str, profile: Profile, out_dir: Optional[str] = None,
         raise
 
     progress(0.97, "대사 정리 중...")
-    records = build_records(readings, profile, zones_px, autocorrect=autocorrect)
+    records = build_records(readings, profile, zones_px, autocorrect=autocorrect, frame_size=(W, H))
     if debug:  # 문제 분석용: 읽은 순간 전체를 JSON으로 남긴다
         import json
         with open(os.path.join(shots_dir, "_debug_readings.json"), "w", encoding="utf-8") as f:
-            json.dump([{"t": round(r.t, 2), "stable": r.stable, "area": r.area_idx,
-                        "lines": [[l.text, round(l.conf, 1), list(l.box)] for l in r.lines]}
+            json.dump([{"t": round(r.t, 2), "stable": r.stable, "area": r.area_idx, "marks": r.marks, "frame_w": r.frame_w,
+                        "lines": [[l.text, round(l.conf, 1), list(l.box)] + ([round(l.tone, 1)] if l.tone >= 0 else [])
+                                  for l in r.lines]}
                        for r in readings], f, ensure_ascii=False, indent=1)
 
     # 사용된 스크린샷만 남기고 이름 정리

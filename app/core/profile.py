@@ -35,6 +35,8 @@ class Region:
     rect: Rect
     label: str = ""  # AREA: 화자가 있을 때 형태 이름 / LABEL: 분류 이름
     label_no_speaker: str = ""  # AREA 전용: 화자가 없을 때 형태 이름
+    mode: str = ""   # AREA 전용: "" = 대사창 · "messenger" = 메신저 화면(말풍선마다 한 줄) · "cards" = 카드 선택 화면
+    header: Optional[Tuple[float, float, float, float]] = None  # 메신저: 상대 이름이 나오는 머리 자리(비율)
 
     def to_px(self, w: int, h: int) -> Tuple[int, int, int, int]:
         x0, y0, x1, y1 = self.rect
@@ -57,6 +59,19 @@ class Profile:
     line_join: str = "auto"           # 줄바꿈 연결: auto / space / none
     replacements: List[List[str]] = field(default_factory=list)  # [["hill", "{PLAYER}"], ...] 결과 치환
     regions: List[Region] = field(default_factory=list)
+    # 화면 표지: 읽을 때마다 이 자리의 밝기(0~255, 중앙값)를 잰다. 예: {"name": "창 밝기", "rect": [x0, y0, x1, y1]}
+    marks: List[dict] = field(default_factory=list)
+    # 형태 규칙: 대사창 결과의 형태를 위에서부터 처음 맞는 규칙으로 정한다. 조건은 모두 생략 가능.
+    #   {"kind": "주인공속말", "speaker": false, "text_left_min": 0.28, "mark": "창 밝기", "mark_max": 120}
+    #   from: 영역이 정한 기본 형태가 이것일 때만 · speaker: 이름표가 있어야(true) / 없어야(false)
+    #   text_left_min/max: 본문 첫 글자의 가로 위치(비율)
+    #   mark + mark_min/mark_max: 화면 표지의 밝기 범위
+    kind_rules: List[dict] = field(default_factory=list)
+    messenger_self: str = "나"        # 메신저에서 색 말풍선(내가 보낸 것)의 화자 이름
+    messenger_self_tone: float = 60.0  # 줄 바탕 채도가 이보다 높으면 색 말풍선
+    choice_marks: List[str] = field(default_factory=list)  # 카드 화면의 상태 표시 글(카드 글에서 빼고 메모로)
+    ui_phrases: List[str] = field(default_factory=list)  # 이 글이 보이면 게임 UI 화면(대사 아님) — 예: "스토리 입장"
+    choice_question: str = ""  # 카드 화면의 질문 말풍선 글이 맞아야 할 정규식 (예: "\\?$" — 물음표로 끝남)
     notes: str = ""
 
     # ---- 조회 ----
@@ -100,8 +115,10 @@ class Profile:
                 continue
             x0, y0, x1, y1 = rect
             rect = (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))
+            hd = r.get("header")
             p.regions.append(Region(type=r["type"], rect=rect, label=r.get("label", ""),
-                                    label_no_speaker=r.get("label_no_speaker", "")))
+                                    label_no_speaker=r.get("label_no_speaker", ""), mode=r.get("mode", ""),
+                                    header=tuple(float(v) for v in hd) if hd and len(hd) == 4 else None))
         return p
 
     @classmethod
