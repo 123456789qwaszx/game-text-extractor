@@ -2,9 +2,12 @@
 
 1) 검출: PaddleOCR의 PP-OCRv5 텍스트 검출 모델(ONNX)로 글자가 있는 줄의 위치를 찾는다.
    배경 그림이 복잡해도 글자 줄만 정확히 잘라낼 수 있다.
-2) 인식: 줄 단위로 잘라낸 이미지를 흑백으로 정리한 뒤 Tesseract로 읽는다.
+2) 인식: 줄 단위로 잘라낸 이미지를 읽는다. 엔진은 둘 중 하나.
+   - ppocr: PP-OCRv5 한국어 인식 모델(ONNX)로 컬러 줄 이미지를 그대로 읽는다(한국어 게임 기본).
+   - tesseract: 흑백으로 정리한 뒤 Tesseract로 읽는다(그 밖의 언어, 또는 모델 파일이 없을 때).
 3) 띄어쓰기: Tesseract는 한국어 띄어쓰기를 자주 틀리므로,
    실제 이미지에서 글자 사이의 빈 간격을 재서 띄어쓰기를 다시 만든다.
+   (ppocr은 띄어쓰기도 모델이 직접 낸다.)
 """
 from __future__ import annotations
 
@@ -380,17 +383,142 @@ def is_meaningful(s: str) -> bool:
     return bool(re.fullmatch(r"[.…·]{2,}[?!]*", s.replace(" ", "")))
 
 
+# ---------------------------------------------------------------- 인식: PP-OCRv5 한국어 모델
+
+
+class PaddleRecognizer:
+    """PP-OCRv5 한국어 인식 모델(korean_PP-OCRv5_mobile_rec)을 onnxruntime으로 실행한다.
+
+    줄 이미지(컬러) → 높이를 모델 입력에 맞춰 늘이고 → 글자 칸마다 확률 → CTC 풀이.
+    글자 목록: 0번 = 빈칸(blank), 1..N = 사전 파일의 줄, N+1 = 띄어쓰기.
+    신뢰도: 고른 글자들의 확률 평균 × 100 (Tesseract 신뢰도와 눈금이 다르다).
+
+    모델만으로는 모자란 두 가지를 보탠다 (1편 정답표에서 잰 결과):
+    - 말줄임표: 이 게임의 '……'(낮게 찍힌 작은 점)를 모델은 3~48% 확률로만 보고 빈칸에 진다.
+      빈칸이 이긴 칸이라도 '…' 확률이 ELLIPSIS_MIN 이상이면 '…'로 본다.
+    - 띄어쓰기: 모델은 띄어쓰기의 35%를 빠뜨린다(특히 쉼표 · 마침표 뒤).
+      Tesseract 쪽과 같은 방법으로, 이웃한 두 글자 사이의 빈 세로줄 폭을 재서 넓으면 띄운다."""
+
+    wants_color = True
+    HEIGHT = 48          # 입력 높이가 모델에 고정돼 있지 않을 때 쓰는 값 (PP-OCRv5 학습 높이)
+    MAX_WIDTH = 3200     # 아주 긴 줄의 상한 (메모리 보호)
+    ELLIPSIS_MIN = 0.03  # 0이면 끈다
+    SPACE_RATIO = TesseractRecognizer.SPACE_RATIO
+
+    def __init__(self, model_path: str = paths.REC_MODEL, dict_path: str = paths.REC_DICT):
+        import onnxruntime as ort
+
+        for f, what in ((model_path, "인식 모델"), (dict_path, "인식 모델 글자 사전")):
+            if not os.path.isfile(f):
+                raise OcrError(f"{what} 파일이 없습니다: {f}")
+        so = ort.SessionOptions()
+        so.log_severity_level = 3
+        self.sess = ort.InferenceSession(model_path, sess_options=so, providers=["CPUExecutionProvider"])
+        inp = self.sess.get_inputs()[0]
+        self.input_name = inp.name
+        h = inp.shape[2] if len(inp.shape) == 4 else None
+        self.height = h if isinstance(h, int) and h > 0 else self.HEIGHT
+        with open(dict_path, encoding="utf-8") as f:
+            chars = [ln.rstrip("\r\n") for ln in f]
+        while chars and chars[-1] == "":
+            chars.pop()
+        self.chars = [""] + chars + [" "]
+        self.model_path = model_path
+        n_out = self.sess.get_outputs()[0].shape[-1]
+        if isinstance(n_out, int) and n_out != len(self.chars):
+            raise OcrError(f"인식 모델 출력({n_out}개)과 글자 사전({len(self.chars)}개, 빈칸 · 띄어쓰기 포함)이 맞지 않습니다.")
+
+    def version(self) -> str:
+        return os.path.splitext(os.path.basename(self.model_path))[0]
+
+    def _resized(self, img: np.ndarray) -> np.ndarray:
+        if img.ndim == 2:
+            img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+        h, w = img.shape[:2]
+        nw = int(min(self.MAX_WIDTH, max(self.height, np.ceil(self.height * w / max(1, h)))))
+        return cv2.resize(img, (nw, self.height), interpolation=cv2.INTER_CUBIC if self.height > h else cv2.INTER_AREA)
+
+    def prepare(self, img: np.ndarray) -> np.ndarray:
+        x = self._resized(img).astype(np.float32) / 255.0
+        x = (x - 0.5) / 0.5
+        return x.transpose(2, 0, 1)[None]
+
+    def _ctc(self, probs: np.ndarray):
+        """probs: (T, 글자 수) → [(글자, 칸 번호, 확률)]. 같은 글자 연속은 하나로, 빈칸은 버린다."""
+        idx = probs.argmax(axis=1)
+        p = probs.max(axis=1)
+        e = self.chars.index("…") if (self.ELLIPSIS_MIN > 0 and "…" in self.chars) else -1
+        if e > 0:
+            weak = (idx == 0) & (probs[:, e] >= self.ELLIPSIS_MIN)
+            idx = np.where(weak, e, idx)
+            p = np.where(weak, probs[:, e], p)
+        out, prev = [], -1
+        for t, k in enumerate(idx):
+            if k != prev and k != 0 and k < len(self.chars):
+                out.append((self.chars[k], t, float(p[t])))
+            prev = k
+        return out
+
+    def decode(self, probs: np.ndarray, ink: Optional[np.ndarray] = None) -> Tuple[str, float]:
+        """ink: 모델 입력 폭과 같은 길이의 '세로줄에 글자 획이 있나' 배열. 주면 넓은 빈틈에 띄어쓰기를 넣는다."""
+        cs = self._ctc(probs)
+        if not cs:
+            return "", 0.0
+        T = probs.shape[0]
+        out = cs[0][0]
+        for (a, ta, _), (b, tb, _) in zip(cs, cs[1:]):
+            if ink is not None and a != " " and b != " ":
+                step = len(ink) / T
+                lo, hi = int((ta + 0.5) * step), int((tb + 0.5) * step)
+                if hi > lo and _longest_false_run(ink[lo:hi]) > self.SPACE_RATIO * self.height:
+                    out += " "
+            out += b
+        conf = 100.0 * float(np.mean([c[2] for c in cs if c[0] != " "] or [0.0]))
+        return re.sub(r" {2,}", " ", out).strip(), conf
+
+    def ink_columns(self, img: np.ndarray) -> np.ndarray:
+        g = self._resized(img)
+        g = cv2.cvtColor(g, cv2.COLOR_BGR2GRAY)
+        _, b = cv2.threshold(g, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        if (b > 0).mean() < 0.5:  # 어두운 바탕의 흰 글씨 → 반전 (Tesseract 쪽 otsu와 같다)
+            b = 255 - b
+        return (b < 128).any(axis=0)
+
+    def read_line(self, img: np.ndarray) -> Tuple[str, float]:
+        y = self.sess.run(None, {self.input_name: self.prepare(img)})[0]
+        return self.decode(y[0], self.ink_columns(img))
+
+
 # ---------------------------------------------------------------- 묶음
 
 
 class LineOCR:
     """영역 이미지 한 장 → 줄 목록."""
 
-    def __init__(self, lang: str = "kor", tesseract_cmd: Optional[str] = None):
+    ENGINES = ("auto", "tesseract", "ppocr")
+
+    @staticmethod
+    def pick_engine(lang: str) -> str:
+        """auto: 한국어(+영어) 게임이고 한국어 인식 모델이 있으면 ppocr, 아니면 tesseract.
+        1편 정답표: 글자 오류율 1.94% → 1.25%, 글자가 틀린 줄(문장부호 제외) 31 → 11, 처리 시간 144초 → 44초."""
+        codes = set(lang.split("+"))
+        if "kor" in codes and codes <= {"kor", "eng"} and os.path.isfile(paths.REC_MODEL) and os.path.isfile(paths.REC_DICT):
+            return "ppocr"
+        return "tesseract"
+
+    def __init__(self, lang: str = "kor", tesseract_cmd: Optional[str] = None, engine: str = "auto"):
         from concurrent.futures import ThreadPoolExecutor
 
         self.detector = TextDetector()
-        self.recognizer = TesseractRecognizer(lang=lang, tesseract_cmd=tesseract_cmd)
+        if engine == "auto":
+            engine = self.pick_engine(lang)
+        if engine == "ppocr":
+            self.recognizer = PaddleRecognizer()
+        elif engine == "tesseract":
+            self.recognizer = TesseractRecognizer(lang=lang, tesseract_cmd=tesseract_cmd)
+        else:
+            raise OcrError(f"알 수 없는 인식 엔진: {engine} ({', '.join(self.ENGINES)} 중 하나)")
+        self.engine = engine
         self._pool = ThreadPoolExecutor(max_workers=max(1, min(4, (os.cpu_count() or 2))))
 
     def detect_rows(self, img_bgr: np.ndarray,
@@ -416,7 +544,8 @@ class LineOCR:
             if len(rows) > 1 and (y1 - y0) < 0.6 * med_h and (x1 - x0) < 2.5 * (y1 - y0):
                 continue
             pad = max(4, int(0.15 * (y1 - y0)))
-            crop = gray[max(0, y0 - pad):min(H, y1 + pad), max(0, x0 - pad):min(W, x1 + pad)]
+            src = img_bgr if getattr(self.recognizer, "wants_color", False) else gray
+            crop = src[max(0, y0 - pad):min(H, y1 + pad), max(0, x0 - pad):min(W, x1 + pad)]
             if crop.size:
                 jobs.append(((x0, y0, x1, y1), crop))
         # 줄마다 Tesseract를 따로 실행하므로 여러 줄을 동시에 읽어 시간을 줄인다

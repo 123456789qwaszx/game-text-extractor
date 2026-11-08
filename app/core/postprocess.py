@@ -265,7 +265,9 @@ def relation(p: Record, c: Record) -> str:
         return "same"
     if len(a) < len(b):
         if not a:
-            return "grow"
+            # 말줄임표만 있는 줄('……')도 글자를 빼면 빈 문자열이다. 곧바로 이어 그려질 때만 자라는 중으로 본다.
+            # (1편 43.1초 면접관 '……'가 16초 뒤 다음 대사의 '앞부분'으로 합쳐져 두 줄이 함께 사라졌다)
+            return "grow" if gap <= 2.0 else "different"
         # 읽는 순간 마지막 글자가 반쯤 그려져 있을 수 있으므로 앞부분 위주로 비교
         if len(a) >= 4 and gap <= 6.0 and ratio(a, b[:len(a)]) >= 0.7:
             return "grow"
@@ -298,7 +300,7 @@ def clean_speaker(s: str) -> str:
 # ---------------------------------------------------------------- 메인
 
 def build_records(readings: Sequence[Reading], profile: Profile,
-                  zones_px: Sequence[Tuple[Region, Box]]) -> List[Record]:
+                  zones_px: Sequence[Tuple[Region, Box]], autocorrect: bool = True) -> List[Record]:
     areas = profile.areas
     korean = "kor" in profile.language
     # 1) 줄 배정 + 줄 오른쪽 끝 통계 (같은 위치에서 시작하는 줄끼리 묶어 '꽉 찬 줄'의 기준을 잡는다)
@@ -375,8 +377,11 @@ def build_records(readings: Sequence[Reading], profile: Profile,
             continue
         if not r.speaker and len(key(r.text)) <= 2 and r.conf < profile.review_confidence:
             continue
-        if korean and r.conf < profile.review_confidence and _hangul_ratio(r.text) < 0.5:
-            continue  # 한국어 게임인데 한글이 거의 없는 낮은 신뢰도 결과 = 배경 무늬 오인식
+        # 한국어 게임인데 한글이 거의 없는 낮은 신뢰도 결과 = 배경 무늬 오인식.
+        # 단, 이름표 아래의 말줄임표만 있는 줄('……')은 글자가 없을 뿐 대사다 (1편 43.1초 · 212.4초가 여기서 버려졌다)
+        if korean and r.conf < profile.review_confidence and _hangul_ratio(r.text) < 0.5 \
+                and not (r.speaker and not key(r.text)):
+            continue
         if not r.stable and r.support < 2:
             if r.conf < profile.review_confidence:
                 continue
@@ -402,7 +407,7 @@ def build_records(readings: Sequence[Reading], profile: Profile,
             r.notes.append(f"화자명 확인 ('{suspect[r.speaker]}' 오인식일 수 있음)")
 
     # 5-1) 한국어 언어 모델로 흔한 오인식 글자 교정
-    if korean:
+    if korean and autocorrect:
         for r in out:
             fixed, fixes = lm_correct(r.text)
             if fixes:

@@ -3,6 +3,10 @@
 - PaddleOCR PP-OCRv5 텍스트 검출 모델 (models/ppocrv5_det.onnx)
   Apache License 2.0 - https://github.com/PaddlePaddle/PaddleOCR
   (ONNX 변환본: OnnxOCR, Apache License 2.0 - https://github.com/jingsongliujing/OnnxOCR)
+- PaddleOCR PP-OCRv5 한국어 인식 모델 korean_PP-OCRv5_mobile_rec
+  (models/korean_PP-OCRv5_mobile_rec.onnx, models/ppocrv5_korean_dict.txt)
+  Apache License 2.0 - https://github.com/PaddlePaddle/PaddleOCR
+  (ONNX 변환본: monkt/paddleocr-onnx, Apache License 2.0 - https://huggingface.co/monkt/paddleocr-onnx)
 - Tesseract OCR 및 tessdata_best 언어 파일 (models/tessdata)
   Apache License 2.0 - https://github.com/tesseract-ocr/tesseract
 - Kiwi 한국어 형태소 분석기 (kiwipiepy) - LGPL v3 - https://github.com/bab2min/kiwipiepy

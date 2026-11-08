@@ -10,6 +10,8 @@ from typing import Optional
 APP_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 MODELS_DIR = os.path.join(APP_ROOT, "models")
 DET_MODEL = os.path.join(MODELS_DIR, "ppocrv5_det.onnx")
+REC_MODEL = os.path.join(MODELS_DIR, "korean_PP-OCRv5_mobile_rec.onnx")
+REC_DICT = os.path.join(MODELS_DIR, "ppocrv5_korean_dict.txt")
 TESSDATA_DIR = os.path.join(MODELS_DIR, "tessdata")
 PROFILES_DIR = os.path.join(APP_ROOT, "profiles")
 SETTINGS_PATH = os.path.join(APP_ROOT, "settings.json")

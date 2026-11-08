@@ -14,6 +14,9 @@ def main(argv=None) -> int:
     ap.add_argument("-p", "--profile", required=True, help="게임 프로필 JSON")
     ap.add_argument("-o", "--out", default=None, help="출력 폴더 (기본: 영상과 같은 폴더)")
     ap.add_argument("--debug", action="store_true", help="문제 분석용 상세 기록(_debug_readings.json) 저장")
+    ap.add_argument("--engine", choices=("auto", "tesseract", "ppocr"), default="auto",
+                    help="글자 인식 엔진 (기본 auto = 한국어면 PP-OCRv5 한국어 모델, 아니면 Tesseract)")
+    ap.add_argument("--no-autocorrect", action="store_true", help="자주 틀리는 글자 자동 교정을 끈다 (비교 시험용)")
     a = ap.parse_args(argv)
     prof = Profile.load(a.profile)
     ocr = None
@@ -26,7 +29,8 @@ def main(argv=None) -> int:
             if p != last[0]:
                 last[0] = p
                 print(f"\r  [{p:3d}%] {msg}".ljust(90), end="", flush=True)
-        res = extract(v, prof, a.out, progress=prog, ocr=ocr, debug=a.debug)
+        res = extract(v, prof, a.out, progress=prog, ocr=ocr, debug=a.debug,
+                      engine=a.engine, autocorrect=not a.no_autocorrect)
         review = sum(1 for r in res.records if r.needs_review)
         print(f"\n  완료: {len(res.records)}줄 (확인 필요 {review}줄) → {res.xlsx_path}")
     return 0

@@ -190,7 +190,7 @@ def fmt_time(t: float) -> str:
 def extract(video_path: str, profile: Profile, out_dir: Optional[str] = None,
             progress: Optional[ProgressFn] = None, cancel: Optional[Callable[[], bool]] = None,
             ocr: Optional[LineOCR] = None, tesseract_cmd: Optional[str] = None,
-            debug: bool = False) -> Result:
+            debug: bool = False, engine: str = "auto", autocorrect: bool = True) -> Result:
     from .export_xlsx import write_xlsx
 
     err = profile.validate()
@@ -216,7 +216,7 @@ def extract(video_path: str, profile: Profile, out_dir: Optional[str] = None,
                 pass
 
     progress(0.0, "글자 인식 엔진 준비 중...")
-    ocr = ocr or LineOCR(lang=profile.language, tesseract_cmd=tesseract_cmd)
+    ocr = ocr or LineOCR(lang=profile.language, tesseract_cmd=tesseract_cmd, engine=engine)
 
     zones_px = [(z, z.to_px(W, H)) for z in profile.zones]
     speaker_px = [b for z, b in zones_px if z.type == SPEAKER]
@@ -301,7 +301,7 @@ def extract(video_path: str, profile: Profile, out_dir: Optional[str] = None,
         raise
 
     progress(0.97, "대사 정리 중...")
-    records = build_records(readings, profile, zones_px)
+    records = build_records(readings, profile, zones_px, autocorrect=autocorrect)
     if debug:  # 문제 분석용: 읽은 순간 전체를 JSON으로 남긴다
         import json
         with open(os.path.join(shots_dir, "_debug_readings.json"), "w", encoding="utf-8") as f:

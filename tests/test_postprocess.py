@@ -21,6 +21,17 @@ class RelationTests(unittest.TestCase):
         c = rec(11.1, "10:10운월\n30일\n필리에 은실 구역")
         self.assertEqual(relation(p, c), "same")
 
+    def test_an_ellipsis_only_line_is_not_the_start_of_a_later_line(self):
+        # 1편: 43.1초 면접관 '……' 뒤 16초 만의 '이력서를 보니…'가 '자라는 중'으로 합쳐져 둘 다 사라졌다
+        p = rec(43.2, "……", speaker="면접관", t_last=45.9)
+        c = rec(59.8, "이력서를 보니 공용 노바어 고급 자격증", speaker="면접관")
+        self.assertEqual(relation(p, c), "different")
+
+    def test_text_drawn_right_after_an_ellipsis_still_grows(self):
+        p = rec(10.0, "……", t_last=10.2)
+        c = rec(10.5, "……그래서")
+        self.assertEqual(relation(p, c), "grow")
+
 
 if __name__ == "__main__":
     unittest.main()
